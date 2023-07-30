@@ -65,3 +65,5 @@ dkms.conf
 *.sln
 *.filters
 *.user
+
+!vendor/**
