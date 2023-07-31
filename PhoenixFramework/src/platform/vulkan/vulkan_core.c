@@ -1,16 +1,22 @@
 #include <phoenix/platform/vulkan/context.h>
 #include <phoenix/phoenix.h>
+#include <phoenix/window.h>
 
 //Forward Decls
 bool pxIsDeviceSuitable(VkDevice);
 void pxSetupIndices();
 const cstr_t pxGetVendorName(VkVendorId);
+bool pxIndicesAreComplete();
+bool pxCheckDeviceExtensionSupport(VkPhysicalDevice device);
 
 void pxInitializeVulkan(const cstr_t appName) {
 	
 	pxCreateInstance(appName);
+	pxCreateSurfaceGLFW();
 	pxSetupPhysicalDevice();
 	pxSetupIndices();
+	PHNX_ASSERT(pxIndicesAreComplete());
+	pxSetupLogicalDevice();
 }
 
 
@@ -42,6 +48,11 @@ void pxCreateInstance(const cstr_t appName) {
 	}
 
 	PHNX_LOG("Created Instance");
+}
+void pxCreateSurfaceGLFW() {
+	if (glfwCreateWindowSurface(gInstance, pxGetWindow(), NULL, &gSurface) != VK_SUCCESS) {
+		PHNX_FATAL("Failed To Create Surface");
+	}
 }
 void pxSetupPhysicalDevice() {
 	U32 deviceCount = 0;
@@ -84,6 +95,7 @@ void pxSetupPhysicalDevice() {
 void pxDestroyContext() {
 	PHNX_LOG("Shutting Down Vulkan");
 	pxFree(gPhysicalDevices);
+	vkDestroySurfaceKHR(gInstance, gSurface, NULL);
 	vkDestroyInstance(gInstance, NULL);
 }
 
@@ -95,7 +107,10 @@ bool pxIsDeviceSuitable(VkPhysicalDevice device) {
 	VkPhysicalDeviceFeatures deviceFeatures;
 	vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
 	QueueFamilyIndices indices = pxGetIndices(device);
-	return (indices.graphicsFamily >= 0);
+
+	bool extensionsPresent = pxCheckDeviceExtensionSupport(device);
+
+	return (indices.graphicsFamily >= 0 && indices.presentFamily >= 0) && extensionsPresent;
 }
 
 bool pxIndicesAreComplete() {
@@ -111,11 +126,14 @@ void pxSetupIndices() {
 	vkGetPhysicalDeviceQueueFamilyProperties(gPhysicalDevice, &queueFamilyCount, pProps);
 	for (int i = 0; i < queueFamilyCount; i++) {
 		VkQueueFamilyProperties family = pProps[i];
-		PHNX_LOG("Queue: %d - Flags: %c%c%c%c", i,
+		VkBool32 presentSupport = false;
+		vkGetPhysicalDeviceSurfaceSupportKHR(gPhysicalDevice, i, gSurface, &presentSupport);
+		PHNX_LOG("Queue: %d - Flags: %c%c%c%c%c", i,
 			(family.queueFlags & VK_QUEUE_GRAPHICS_BIT) ? 'G' : '-',
 			(family.queueFlags & VK_QUEUE_COMPUTE_BIT) ? 'C' : '-',
-			(family.queueFlags & VK_QUEUE_PROTECTED_BIT) ? 'P' : '-',
-			(family.queueFlags & VK_QUEUE_TRANSFER_BIT) ? 'T' : '-'
+			(family.queueFlags & VK_QUEUE_PROTECTED_BIT) ? 'R' : '-',
+			(family.queueFlags & VK_QUEUE_TRANSFER_BIT) ? 'T' : '-',
+			(presentSupport ? 'P' : '-')
 		);
 	}
 
@@ -129,13 +147,20 @@ void pxSetupIndices() {
 			gIndices.computeFamily = i;
 		}
 
-		if (gIndices.computeFamily > -1 && gIndices.computeFamily > -1) break;
+		VkBool32 presentSupport = false;
+		vkGetPhysicalDeviceSurfaceSupportKHR(gPhysicalDevice, i, gSurface, &presentSupport);
+
+		if (presentSupport) {
+			gIndices.presentFamily = i;
+		}
+
+		if (gIndices.graphicsFamily > -1 && gIndices.computeFamily > -1 && gIndices.presentFamily > -1) break;
 
 	}
 
-	PHNX_LOG("Indices:\n\tGraphics: %d\n\tCompute: %d", gIndices.graphicsFamily, gIndices.computeFamily);
+	PHNX_LOG("Indices:\n\tGraphics: %d\n\tCompute: %d\n\tPresent: %d", gIndices.graphicsFamily, gIndices.computeFamily, gIndices.presentFamily);
 
-	PHNX_ASSERT(gIndices.graphicsFamily >= 0);
+	
 
 	pxFree(pProps);
 }
@@ -159,9 +184,75 @@ QueueFamilyIndices pxGetIndices(VkPhysicalDevice device) {
 			indices.computeFamily = i;
 		}
 
+		VkBool32 presentSupport = false;
+		vkGetPhysicalDeviceSurfaceSupportKHR(device, i, gSurface, &presentSupport);
+
+		if (presentSupport) {
+			indices.presentFamily = i;
+		}
+
+		if (indices.graphicsFamily > -1 && indices.computeFamily > -1 && indices.presentFamily > -1) break;
+
 	}
 
 	pxFree(pProps);
 
 	return indices;
+}
+
+
+void pxSetupLogicalDevice() {
+	VkPhysicalDeviceFeatures deviceFeatures = {0};
+	I32 families[] = { gIndices.graphicsFamily, gIndices.presentFamily };
+	VkDeviceQueueCreateInfo queueInfos[2] = { 0, 0 };
+	float queuePriority = 1.0f;
+	for (int i = 0; i < 2; i++) {
+		queueInfos[i].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+		queueInfos[i].queueFamilyIndex = gIndices.graphicsFamily;
+		queueInfos[i].queueCount = 1;
+		
+		queueInfos[i].pQueuePriorities = &queuePriority;
+	}
+
+	
+
+	VkDeviceCreateInfo createInfo = {0};
+	createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+	createInfo.pQueueCreateInfos = queueInfos;
+	createInfo.queueCreateInfoCount = 2;
+
+	createInfo.pEnabledFeatures = &deviceFeatures;
+	if (vkCreateDevice(gPhysicalDevice, &createInfo, NULL, &gDevice) != VK_SUCCESS) {
+		PHNX_FATAL("Failed To Create Logical Device");
+	}
+
+	PHNX_LOG("Created Logical Device");
+
+	vkGetDeviceQueue(gDevice, gIndices.graphicsFamily, 0, &gGraphicsQueue);
+	vkGetDeviceQueue(gDevice, gIndices.presentFamily, 0, &gPresentQueue);
+}
+
+bool pxCheckDeviceExtensionSupport(VkPhysicalDevice device) {
+	uint32_t extensionCount;
+	vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, NULL);
+
+	VkExtensionProperties* pExtensions = pxCalloc(extensionCount, sizeof(VkExtensionProperties));
+	vkEnumerateDeviceExtensionProperties(device, NULL, &extensionCount, pExtensions);
+	bool passed = true;
+	for (int i = 0; i < REQUIRED_EXT_COUNT; i++) {
+		bool found = false;
+		for (int j = 0; j < extensionCount; j++) {
+			if (strcmp(pExtensions[j].extensionName, requiredExtensions[i]) == 0) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) { passed = false; break; }
+	}
+
+	end_check:
+
+	pxFree(pExtensions);
+
+	return passed;
 }
