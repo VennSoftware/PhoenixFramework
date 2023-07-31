@@ -1,6 +1,15 @@
 #include <phoenix/phoenix.h>
+#include <phoenix/window.h>
 
 int main(void) {
-	phnx_init(1080, 720, "Phoenix App");
+	pxInit(1080, 720, "Phoenix App");
+
+	while (pxIsRunning()) {
+		pxBeginFrame();
+		pxEndFrame();
+	}
+
+	pxDestroy();
+
 	return 0;
 }
